@@ -1,0 +1,218 @@
+static_resources:
+  listeners:
+  - name: http_connect
+    address:
+      socket_address:
+        protocol: TCP
+        address: 0.0.0.0
+        port_value: 80
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress_http
+          tracing: {}
+          route_config:
+            name: local_route
+            virtual_hosts:
+            - name: local_service
+              domains:
+              - "*"
+              routes:
+              - match:
+                  prefix: '/app1/'
+                route:
+                  cluster: outbound_tls_proxy
+                typed_per_filter_config:
+                  envoy.filters.http.dynamic_forward_proxy:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.PerRouteConfig
+                    host_rewrite_literal: app1.${APP_DOMAIN}
+              - match:
+                  prefix: '/app2/'
+                route:
+                  cluster: outbound_tls_proxy
+                typed_per_filter_config:
+                  envoy.filters.http.dynamic_forward_proxy:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.PerRouteConfig
+                    host_rewrite_literal: app2.${APP_DOMAIN}
+              - match:
+                  prefix: '/app3/'
+                route:
+                  cluster: outbound_tls_proxy
+                typed_per_filter_config:
+                  envoy.filters.http.dynamic_forward_proxy:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.PerRouteConfig
+                    host_rewrite_literal: app3.${APP_DOMAIN}
+          http_filters:
+          - name: envoy.filters.http.health_check
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.health_check.v3.HealthCheck
+              pass_through_mode: false
+              headers:
+                - exact_match: /health
+                  name: :path
+          - name: envoy.filters.http.lua
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+              default_source_code: 
+                inline_string: 
+                  function envoy_on_request(request_handle)
+                    local headers = request_handle:headers()
+                    local prefix = "x-"
+                    local to_remove = {}
+                    for key, value in pairs(headers) do
+                      if ((key:find(prefix, 1, true) == 1) and (key ~= "x-forwarded-for") and (key ~= "x-envoy-internal") and (key ~= "x-amzn-trace-id") and (key ~= "x-forwarded-port") and (key ~= "x-forwarded-proto") and (key ~= "x-request-id")) then
+                        table.insert(to_remove, key)
+                      end
+                    end
+                    for _, value in pairs(to_remove) do
+                      request_handle:logInfo("removing header:"..value)
+                      headers:remove(value)
+                    end                    
+                  end
+          - name: envoy.filters.http.jwt_authn
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
+              providers:
+                okta-jwt:
+                  issuer: ${JWT_ISSUER}
+                  claim_to_headers:
+                  - header_name: x-jwt-subject
+                    claim_name: sub
+                  audiences:
+                    - ${JWT_AUDIENCE}
+                  jwt_cache_config:
+                    jwt_cache_size: 100
+                  remote_jwks:
+                    http_uri:
+                      uri: ${JWT_JWKS}
+                      cluster: jwks
+                      timeout: 1s
+                    async_fetch:
+                      fast_listener: false
+                    cache_duration:
+                      seconds: 300
+                  from_headers:
+                  - name: Authorization
+                    value_prefix: "Bearer "
+                  payload_in_metadata: jwt_payload
+              rules:
+              - match:
+                  prefix: /
+                requires: 
+                  provider_name: okta-jwt
+          - name: envoy.filters.http.lua
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+              default_source_code: 
+                inline_string: 
+                  function envoy_on_request(request_handle)
+                    local meta = request_handle:streamInfo():dynamicMetadata()
+                    for key, value in pairs(meta) do
+                      if(key == "envoy.filters.http.jwt_authn" and value.jwt_payload.scp ~= nil) then
+                        for _, value1 in pairs(value.jwt_payload.scp) do
+                          request_handle:headers():add("x-jwt-scope-" .. value1, "true")
+                        end
+                        break
+                      end
+                    end
+                  end
+          - name: envoy.filters.http.dynamic_forward_proxy
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig
+              dns_cache_config:
+                name: dynamic_forward_proxy_cache_config
+                dns_lookup_family: V4_ONLY
+                typed_dns_resolver_config:
+                  name: envoy.network.dns_resolver.cares
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.network.dns_resolver.cares.v3.CaresDnsResolverConfig
+                    use_resolvers_as_fallback: true
+                    resolvers:
+                    - socket_address:
+                        address: "127.0.0.1"
+                        port_value: 53
+                    dns_resolver_options:
+                      use_tcp_for_dns_lookups: true
+                      no_default_search_domain: true
+          - name: envoy.filters.http.aws_request_signing
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.aws_request_signing.v3.AwsRequestSigning
+              service_name: vpc-lattice-svcs
+              region: ap-southeast-2
+              use_unsigned_payload: true
+              match_excluded_headers:
+              - prefix: x-envoy
+              - prefix: x-forwarded
+              - exact: x-amzn-trace-id
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+  - name: outbound_tls_proxy
+    lb_policy: CLUSTER_PROVIDED
+    cluster_type:
+      name: envoy.clusters.dynamic_forward_proxy
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig
+        dns_cache_config:
+          name: dynamic_forward_proxy_cache_config
+          dns_lookup_family: V4_ONLY
+          typed_dns_resolver_config:
+            name: envoy.network.dns_resolver.cares
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.network.dns_resolver.cares.v3.CaresDnsResolverConfig
+              use_resolvers_as_fallback: true
+              resolvers:
+              - socket_address:
+                  address: "127.0.0.1"
+                  port_value: 53
+              dns_resolver_options:
+                use_tcp_for_dns_lookups: true
+                no_default_search_domain: true
+  - name: jwks
+    type: STRICT_DNS
+    connect_timeout: 5s
+    load_assignment:
+      cluster_name: jwks
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: ${JWKS_HOST}
+                port_value: 443
+    transport_socket:
+      name: envoy.transport_sockets.tls
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+tracing:
+  http:
+    name: envoy.tracers.xray
+    typed_config:
+      "@type": type.googleapis.com/envoy.config.trace.v3.XRayConfig
+      segment_name: "envoy-frontend"
+      daemon_endpoint:
+        protocol: UDP
+        address: 127.0.0.1
+        port_value: 2000
+      sampling_rule_manifest:
+        inline_string: |
+          {
+            "version": 2,
+            "rules": [
+              {
+                "description": "NoHealthChecks",
+                "host": "*",
+                "http_method": "*",
+                "url_path": "/health",
+                "fixed_target": 0,
+                "rate": 0.0
+              }
+            ],
+            "default": {
+              "fixed_target": 1,
+              "rate": 0.05
+            }
+          }
