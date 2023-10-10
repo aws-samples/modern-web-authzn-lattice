@@ -277,20 +277,20 @@ class LatticeSolnStack(Stack):
             platform=Platform.LINUX_AMD64,
         )
 
-        # Create a list of principals, that can be used in our lattice servicenetwork policy. As we loop through the app creation,
-        # we add a principal to this list each time, then create and apply the full lattice service network policy statement
-        # after the loop completes
-        authprincipals = [iam.ArnPrincipal(envoy_frontend_task_role.role_arn)]
+        # Create a list of roles, that can be used in our lattice servicenetwork and service policies
+        roles = {}
+        roles['envoy-frontend'] = envoy_frontend_task_role
 
         for name in ("app1", "app2", "app3"):
             # Create an iam role for the task running the app. This allows the task to perform sigv4 signing to access lattice
-            app_task_role = iam.Role(
+            id = name + "TaskRole";
+            app_role = iam.Role(
                 self,
-                name + "TaskRole",
+                id,
                 assumed_by=iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
             )
 
-            app_task_role.attach_inline_policy(
+            app_role.attach_inline_policy(
                 iam.Policy(
                     self,
                     name + "TaskPolicy",
@@ -308,14 +308,16 @@ class LatticeSolnStack(Stack):
                 )
             )
             # Store the new task role to our list
-            authprincipals.append(iam.ArnPrincipal(app_task_role.role_arn))
+            roles[name]=app_role
+
+        for name in ("app1", "app2", "app3"):
 
             # Create a task definition for our app component
             task_definition = ecs.Ec2TaskDefinition(
                 self,
                 name + "-task",
                 network_mode=ecs.NetworkMode.AWS_VPC,
-                task_role=app_task_role,
+                task_role=roles[name],
             )
 
             task_definition.add_container(
@@ -345,22 +347,76 @@ class LatticeSolnStack(Stack):
             # Restrict access to the load balancer from lattice only. This prevents bypassing lattice and accessing the service directly
             service.load_balancer.add_security_group(latticesecuritygroup)
 
-            # Create a lattice service for our new app component
-            LatticeService = vpclattice.CfnService(
+            # Create a lattice service for our new app component, with IAM authentication
+            latticeservice = vpclattice.CfnService(
                 self,
                 name + "-LatticeService",
                 dns_entry=vpclattice.CfnService.DnsEntryProperty(
                     domain_name=name + "." + app_domain, hosted_zone_id=zone.hosted_zone_id
                 ),
                 custom_domain_name=name + "." + app_domain,
+                auth_type="AWS_IAM"
             )
 
+            authpolicy = iam.PolicyDocument()
+
+            # Create our lattice service policy
+            match name:
+                case 'app1':
+                    # app1 policy allows clients with scope test.all and application app2 to call
+                    authpolicy = iam.PolicyDocument(
+                        statements=[
+                            iam.PolicyStatement(
+                                actions=["vpc-lattice-svcs:Invoke"],
+                                principals=[iam.ArnPrincipal(roles['app2'].role_arn)],
+                                resources=[latticeservice.attr_arn],
+                            ),
+                            iam.PolicyStatement(
+                                actions=["vpc-lattice-svcs:Invoke"],
+                                principals=[iam.ArnPrincipal(roles['envoy-frontend'].role_arn)],
+                                resources=[latticeservice.attr_arn],
+                                conditions={"StringEquals": {"vpc-lattice-svcs:RequestHeader/x-jwt-scope-test.all": "true"}},
+                            )
+                        ]
+                    )
+                case 'app2':
+                    # app2 policy allows clients with scope test.all
+                    authpolicy = iam.PolicyDocument(
+                        statements=[
+                            iam.PolicyStatement(
+                                actions=["vpc-lattice-svcs:Invoke"],
+                                principals=[iam.ArnPrincipal(roles['envoy-frontend'].role_arn)],
+                                resources=[latticeservice.attr_arn],
+                                conditions={"StringEquals": {"vpc-lattice-svcs:RequestHeader/x-jwt-scope-test.all": "true"}},
+                            )
+                        ]
+                    )
+                case 'app3':
+                    # no auth policy for app3
+                    authpolicy = iam.PolicyDocument(
+                        statements=[
+                            iam.PolicyStatement(
+                                effect=iam.Effect.DENY,
+                                actions=['*'],
+                                principals=[iam.AnyPrincipal()],
+                                resources=[latticeservice.attr_arn]
+                            )
+                        ]
+                    )
+
+            servicepolicy = vpclattice.CfnAuthPolicy(
+                self,
+                name+"LatticeServicePolicy",
+                resource_identifier=latticeservice.attr_arn,
+                policy=authpolicy,
+            )
+            
             # Associate the lattice service with our service network
             vpclattice.CfnServiceNetworkServiceAssociation(
                 self,
                 name + "-ServiceAssociation",
                 service_network_identifier=servicenetwork.attr_arn,
-                service_identifier=LatticeService.attr_arn,
+                service_identifier=latticeservice.attr_arn,
             )
 
             # Link the lattice target group to our newly created load balancer
@@ -384,7 +440,7 @@ class LatticeSolnStack(Stack):
                 name + "-cname",
                 record_name=name,
                 zone=zone,
-                domain_name=LatticeService.attr_dns_entry_domain_name,
+                domain_name=latticeservice.attr_dns_entry_domain_name,
             )
 
             # Create our lattice listener for this app component
@@ -402,15 +458,19 @@ class LatticeSolnStack(Stack):
                     )
                 ),
                 port=80,
-                service_identifier=LatticeService.attr_id,
+                service_identifier=latticeservice.attr_id,
             )
 
         # Create our overarching service network policy using the task roles we defined in 'authprincipals' above
+        arnprincipals = []
+        for i in list(roles.values()):
+            arnprincipals.append(iam.ArnPrincipal(i.role_arn))
+
         authpolicy = iam.PolicyDocument(
             statements=[
                 iam.PolicyStatement(
                     actions=["vpc-lattice-svcs:Invoke"],
-                    principals=authprincipals,
+                    principals=arnprincipals,
                     resources=["*"],
                 )
             ]
