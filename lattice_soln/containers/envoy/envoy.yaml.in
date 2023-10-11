@@ -12,7 +12,6 @@ static_resources:
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
           stat_prefix: ingress_http
-          tracing: {}
           route_config:
             name: local_route
             virtual_hosts:
@@ -20,10 +19,12 @@ static_resources:
               domains:
               - "*"
               routes:
+              # Path matches for our application servers
               - match:
                   prefix: '/app1/'
                 route:
-                  cluster: outbound_tls_proxy
+                  cluster: outbound_proxy
+                # Host rewriting required to ensure SigV4 authentication uses the correct host
                 typed_per_filter_config:
                   envoy.filters.http.dynamic_forward_proxy:
                     "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.PerRouteConfig
@@ -31,7 +32,7 @@ static_resources:
               - match:
                   prefix: '/app2/'
                 route:
-                  cluster: outbound_tls_proxy
+                  cluster: outbound_proxy
                 typed_per_filter_config:
                   envoy.filters.http.dynamic_forward_proxy:
                     "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.PerRouteConfig
@@ -39,11 +40,21 @@ static_resources:
               - match:
                   prefix: '/app3/'
                 route:
-                  cluster: outbound_tls_proxy
+                  cluster: outbound_proxy
                 typed_per_filter_config:
                   envoy.filters.http.dynamic_forward_proxy:
                     "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.PerRouteConfig
                     host_rewrite_literal: app3.${APP_DOMAIN}
+              # Catch all - send to app1
+              - match:
+                  prefix: '/'
+                route:
+                  cluster: outbound_proxy
+                typed_per_filter_config:
+                  envoy.filters.http.dynamic_forward_proxy:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.PerRouteConfig
+                    host_rewrite_literal: app1.${APP_DOMAIN}
+          # Ignore traffic to /health and respond with a 200
           http_filters:
           - name: envoy.filters.http.health_check
             typed_config:
@@ -52,6 +63,7 @@ static_resources:
               headers:
                 - exact_match: /health
                   name: :path
+          # Strip out any x- headers in case someone tries to smuggle them through
           - name: envoy.filters.http.lua
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
@@ -71,11 +83,12 @@ static_resources:
                       headers:remove(value)
                     end                    
                   end
+          # JWT Authentication configuration. Copy subject to x-jwt-header
           - name: envoy.filters.http.jwt_authn
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
               providers:
-                okta-jwt:
+                jwt-jwks-host:
                   issuer: ${JWT_ISSUER}
                   claim_to_headers:
                   - header_name: x-jwt-subject
@@ -97,11 +110,13 @@ static_resources:
                   - name: Authorization
                     value_prefix: "Bearer "
                   payload_in_metadata: jwt_payload
+              # Everything must be authenticated to pass through envoy
               rules:
               - match:
                   prefix: /
                 requires: 
-                  provider_name: okta-jwt
+                  provider_name: jwt-jwks-host
+          # Additional lua script to extract scope items and copy them to headers
           - name: envoy.filters.http.lua
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
@@ -136,11 +151,12 @@ static_resources:
                     dns_resolver_options:
                       use_tcp_for_dns_lookups: true
                       no_default_search_domain: true
+          # SigV4 signing configuration
           - name: envoy.filters.http.aws_request_signing
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.aws_request_signing.v3.AwsRequestSigning
               service_name: vpc-lattice-svcs
-              region: ap-southeast-2
+              region: ${DEPLOY_REGION}
               use_unsigned_payload: true
               match_excluded_headers:
               - prefix: x-envoy
@@ -150,7 +166,7 @@ static_resources:
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
   clusters:
-  - name: outbound_tls_proxy
+  - name: outbound_proxy
     lb_policy: CLUSTER_PROVIDED
     cluster_type:
       name: envoy.clusters.dynamic_forward_proxy
@@ -171,6 +187,7 @@ static_resources:
               dns_resolver_options:
                 use_tcp_for_dns_lookups: true
                 no_default_search_domain: true
+  # Host configuration for jwks lookup
   - name: jwks
     type: STRICT_DNS
     connect_timeout: 5s
@@ -187,32 +204,4 @@ static_resources:
       name: envoy.transport_sockets.tls
       typed_config:
         "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
-tracing:
-  http:
-    name: envoy.tracers.xray
-    typed_config:
-      "@type": type.googleapis.com/envoy.config.trace.v3.XRayConfig
-      segment_name: "envoy-frontend"
-      daemon_endpoint:
-        protocol: UDP
-        address: 127.0.0.1
-        port_value: 2000
-      sampling_rule_manifest:
-        inline_string: |
-          {
-            "version": 2,
-            "rules": [
-              {
-                "description": "NoHealthChecks",
-                "host": "*",
-                "http_method": "*",
-                "url_path": "/health",
-                "fixed_target": 0,
-                "rate": 0.0
-              }
-            ],
-            "default": {
-              "fixed_target": 1,
-              "rate": 0.05
-            }
-          }
+

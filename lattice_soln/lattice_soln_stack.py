@@ -113,6 +113,7 @@ class LatticeSolnStack(Stack):
         env["APP_DOMAIN"] = app_domain
         env["JWT_AUDIENCE"] = jwt_audience
         env["JWKS_HOST"] = urlparse(env["JWT_JWKS"]).hostname
+        env["DEPLOY_REGION"] = Stack.of(self).region
 
         # Create a new VPC
         vpc = ec2.Vpc(self, "LatticeSolnVPC", max_azs=3)
@@ -369,24 +370,24 @@ class LatticeSolnStack(Stack):
                             iam.PolicyStatement(
                                 actions=["vpc-lattice-svcs:Invoke"],
                                 principals=[iam.ArnPrincipal(roles['app2'].role_arn)],
-                                resources=[latticeservice.attr_arn],
+                                resources=[latticeservice.attr_arn+"/*"],
                             ),
                             iam.PolicyStatement(
                                 actions=["vpc-lattice-svcs:Invoke"],
                                 principals=[iam.ArnPrincipal(roles['envoy-frontend'].role_arn)],
-                                resources=[latticeservice.attr_arn],
+                                resources=[latticeservice.attr_arn+"/*"],
                                 conditions={"StringEquals": {"vpc-lattice-svcs:RequestHeader/x-jwt-scope-test.all": "true"}},
                             )
                         ]
                     )
                 case 'app2':
-                    # app2 policy allows clients with scope test.all
+                    # app2 policy only allows clients with scope test.all
                     authpolicy = iam.PolicyDocument(
                         statements=[
                             iam.PolicyStatement(
                                 actions=["vpc-lattice-svcs:Invoke"],
                                 principals=[iam.ArnPrincipal(roles['envoy-frontend'].role_arn)],
-                                resources=[latticeservice.attr_arn],
+                                resources=[latticeservice.attr_arn+"/*"],
                                 conditions={"StringEquals": {"vpc-lattice-svcs:RequestHeader/x-jwt-scope-test.all": "true"}},
                             )
                         ]
@@ -399,7 +400,7 @@ class LatticeSolnStack(Stack):
                                 effect=iam.Effect.DENY,
                                 actions=['*'],
                                 principals=[iam.AnyPrincipal()],
-                                resources=[latticeservice.attr_arn]
+                                resources=[latticeservice.attr_arn+"/*"]
                             )
                         ]
                     )
@@ -461,7 +462,7 @@ class LatticeSolnStack(Stack):
                 service_identifier=latticeservice.attr_id,
             )
 
-        # Create our overarching service network policy using the task roles we defined in 'authprincipals' above
+        # Create our overarching service network policy using the task roles we defined in 'roles' above
         arnprincipals = []
         for i in list(roles.values()):
             arnprincipals.append(iam.ArnPrincipal(i.role_arn))
