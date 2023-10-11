@@ -20,19 +20,20 @@ app.use(function (req, res, next) {
     }));
 });
 
-app.all('/app[123]', (req, res) => {
+app.all('/app[123]/call-to-app[123]', (req, res) => {
         // res.json({"text":"got an app path"})
         console.log("got an app path")
         const http = require("http");
-
+        
+        var headers={}
+        if('x-jwt-subject' in req.headers)
+            headers['x-on-behalf-of-subject'] = req.headers['x-jwt-subject']
         const options = {
-        hostname: req.path.substring(1)+'.application.internal',
+        hostname: req.path.slice(-4)+'.application.internal',
         port: 443,
         path: '/',
         method: 'GET',
-        headers: {
-            'x-on-behalf-of': req.headers['x-jwt-subject'],
-        }
+        headers: headers
         }
 
         req = http.request(options, (resp) => {
@@ -97,6 +98,8 @@ app.all('*', (req, res) => {
     .filter(key => !key.startsWith("x-amz-"));
     req.headers = newheaders;
 
+    if('x-on-behalf-of-subject' in req.headers)
+        echo.text={ 'on-behalf-of':'Call made on behalf of subject:'+req.headers['x-on-behalf-of-subject']}
     res.json(echo);
 
     //Certain paths can be ignored in the container logs, useful to reduce noise from healthchecks
