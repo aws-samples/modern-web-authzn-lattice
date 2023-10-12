@@ -21,7 +21,7 @@ static_resources:
               routes:
               # Path matches for our application servers
               - match:
-                  prefix: '/app1/'
+                  prefix: '/app1'
                 route:
                   cluster: outbound_proxy
                 # Host rewriting required to ensure SigV4 authentication uses the correct host
@@ -30,7 +30,7 @@ static_resources:
                     "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.PerRouteConfig
                     host_rewrite_literal: app1.${APP_DOMAIN}
               - match:
-                  prefix: '/app2/'
+                  prefix: '/app2'
                 route:
                   cluster: outbound_proxy
                 typed_per_filter_config:
@@ -38,7 +38,7 @@ static_resources:
                     "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.PerRouteConfig
                     host_rewrite_literal: app2.${APP_DOMAIN}
               - match:
-                  prefix: '/app3/'
+                  prefix: '/app3'
                 route:
                   cluster: outbound_proxy
                 typed_per_filter_config:

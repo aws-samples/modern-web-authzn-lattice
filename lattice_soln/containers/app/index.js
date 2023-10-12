@@ -6,6 +6,30 @@ const os = require('os');
 const jwt = require('jsonwebtoken');
 var concat = require('concat-stream');
 
+const crt = require("aws-crt");
+const {HttpRequest} = require("aws-crt/dist/native/http");
+
+const region = 'ap-southeast-2'
+
+function sigV4SignBasic(method, endpoint, service) {
+    const host = new URL(endpoint).host;
+    const request = new HttpRequest(method, endpoint);
+    request.headers.add('host', host);
+
+    const config = {
+        service: service,
+        region: region,
+        algorithm: crt.auth.AwsSigningAlgorithm.SigV4,
+        signature_type: crt.auth.AwsSignatureType.HttpRequestViaHeaders,
+        signed_body_header: crt.auth.AwsSignedBodyHeaderType.XAmzContentSha256,
+        provider: crt.auth.AwsCredentialsProvider.newDefault()
+    };
+
+    crt.auth.aws_sign_request(request, config);
+    return request.headers;
+}
+
+
 app.set('json spaces', 2);
 app.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal']);
 
@@ -25,12 +49,22 @@ app.all('/app[123]/call-to-app[123]', (req, res) => {
         console.log("got an app path")
         const http = require("http");
         
+        const host = req.path.slice(-4)+'.application.internal'
+        const url = 'http://'+host
+        console.log(host)
+        console.log(url)
+
         var headers={}
+        sigv4headers = sigV4SignBasic("GET",url,"vpc-lattice-svcs")
+        for (const sigv4header of sigv4headers) { 
+            headers[sigv4header[0]]=sigv4header[1]
+        }
+
         if('x-jwt-subject' in req.headers)
             headers['x-on-behalf-of-subject'] = req.headers['x-jwt-subject']
         const options = {
-        hostname: req.path.slice(-4)+'.application.internal',
-        port: 443,
+        hostname: host,
+        port: 80,
         path: '/',
         method: 'GET',
         headers: headers
@@ -46,7 +80,7 @@ app.all('/app[123]/call-to-app[123]', (req, res) => {
             });       
          })
         .on("error", err => {
-            console.log("Error: " + err.message);
+            console.log("Error: " + err);
         });
         req.on('error', (e) => {
             console.error(`problem with request: ${e.message}`);
