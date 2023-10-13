@@ -7,28 +7,28 @@ const jwt = require('jsonwebtoken');
 var concat = require('concat-stream');
 
 const crt = require("aws-crt");
-const {HttpRequest} = require("aws-crt/dist/native/http");
+const { HttpRequest } = require("aws-crt/dist/native/http");
 
 const region = 'ap-southeast-2'
+const util = require('util')
 
 function sigV4SignBasic(method, endpoint, service) {
     const host = new URL(endpoint).host;
     const request = new HttpRequest(method, endpoint);
     request.headers.add('host', host);
-
+    crt.io.enable_logging(crt.io.LogLevel.INFO);
     const config = {
         service: service,
         region: region,
         algorithm: crt.auth.AwsSigningAlgorithm.SigV4,
         signature_type: crt.auth.AwsSignatureType.HttpRequestViaHeaders,
         signed_body_header: crt.auth.AwsSignedBodyHeaderType.XAmzContentSha256,
+        signed_body_value: crt.auth.AwsSignedBodyValue.UnsignedPayload,
         provider: crt.auth.AwsCredentialsProvider.newDefault()
     };
 
-    crt.auth.aws_sign_request(request, config);
-    return request.headers;
+    return crt.auth.aws_sign_request(request, config);
 }
-
 
 app.set('json spaces', 2);
 app.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal']);
@@ -45,47 +45,57 @@ app.use(function (req, res, next) {
 });
 
 app.all('/app[123]/call-to-app[123]', (req, res) => {
-        // res.json({"text":"got an app path"})
-        console.log("got an app path")
-        const http = require("http");
-        
-        const host = req.path.slice(-4)+'.application.internal'
-        const url = 'http://'+host
-        console.log(host)
-        console.log(url)
+    // res.json({"text":"got an app path"})
+    console.log("got an app path")
+    const http = require("http");
 
-        var headers={}
-        sigv4headers = sigV4SignBasic("GET",url,"vpc-lattice-svcs")
-        for (const sigv4header of sigv4headers) { 
-            headers[sigv4header[0]]=sigv4header[1]
-        }
+    const host = req.path.slice(-4) + '.application.internal'
+    const url = 'http://' + host
+    console.log(host)
+    console.log(url)
 
-        if('x-jwt-subject' in req.headers)
-            headers['x-on-behalf-of-subject'] = req.headers['x-jwt-subject']
-        const options = {
-        hostname: host,
-        port: 80,
-        path: '/',
-        method: 'GET',
-        headers: headers
-        }
+    var headers = {}
+    if ('x-jwt-subject' in req.headers)
+        headers['x-on-behalf-of-subject'] = req.headers['x-jwt-subject']
 
-        req = http.request(options, (resp) => {
-            let data = [];
-            resp.on('data', chunk => {
-                data.push(chunk);
-              });
-            resp.on('end', () => {
-              res.send(JSON.parse(Buffer.concat(data).toString()));
-            });       
-         })
-        .on("error", err => {
-            console.log("Error: " + err);
-        });
-        req.on('error', (e) => {
-            console.error(`problem with request: ${e.message}`);
-          });
-        req.end();
+    sigV4SignBasic("GET", url, "vpc-lattice-svcs").then(
+        (httpResponse) => {
+            console.log("**SIGV4HEADERS**");
+            console.dir(httpResponse, { depth: null });
+            for (const sigv4header of httpResponse.headers) {
+                headers[sigv4header[0]] = sigv4header[1]
+                console.log("Adding " + sigv4header[0] + ":" + sigv4header[1])
+            }
+            const options = {
+                hostname: host,
+                port: 80,
+                path: '/',
+                method: 'GET',
+                headers: headers
+            }
+
+            req = http.request(options, (resp) => {
+                let data = [];
+                resp.on('data', chunk => {
+                    data.push(chunk);
+                });
+                resp.on('end', () => {
+                    try {
+                        res.send(JSON.parse(Buffer.concat(data).toString()));
+                    }
+                    catch {
+                        res.send({ 'upstreamResponse': Buffer.concat(data).toString() });
+                    }
+                });
+            })
+            .on("error", err => {
+                console.log("Error: " + err);
+            });
+            req.on('error', (e) => {
+                console.error(`problem with request: ${e.message}`);
+            });
+            req.end();
+        })
 })
 
 //Handle all paths
@@ -129,11 +139,11 @@ app.all('*', (req, res) => {
 
     // strip out any unnecessary headers
     let newheaders = Object.keys(req.headers)
-    .filter(key => !key.startsWith("x-amz-"));
+        .filter(key => !key.startsWith("x-amz-"));
     req.headers = newheaders;
 
-    if('x-on-behalf-of-subject' in req.headers)
-        echo.text={ 'on-behalf-of':'Call made on behalf of subject:'+req.headers['x-on-behalf-of-subject']}
+    if ('x-on-behalf-of-subject' in req.headers)
+        echo.text = { 'on-behalf-of': 'Call made on behalf of subject:' + req.headers['x-on-behalf-of-subject'] }
     res.json(echo);
 
     //Certain paths can be ignored in the container logs, useful to reduce noise from healthchecks

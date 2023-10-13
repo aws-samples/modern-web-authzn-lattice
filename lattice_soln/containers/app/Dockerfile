@@ -11,5 +11,5 @@ COPY package.json /app/package.json
 RUN npm install
 ENV HTTP_PORT=8080
 EXPOSE $HTTP_PORT
-USER 1000
+# USER 1000
 CMD ["node", "/app/index.js"]
