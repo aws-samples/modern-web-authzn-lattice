@@ -107,13 +107,18 @@ class LatticeSolnStack(Stack):
                   eg: cdk deploy -c jwt_jwks=https://dev-123456.okta.com/oauth2/ausa1234567/v1/keys -c jwt_issuer=https://dev-123456.okta.com/oauth2/ausa1234567 -c jwt_audience=example -c app_domain=application.internal
                              """)
 
-        env = {}
-        env["JWT_JWKS"] = jwt_jwks
-        env["JWT_ISSUER"] = jwt_issuer
-        env["APP_DOMAIN"] = app_domain
-        env["JWT_AUDIENCE"] = jwt_audience
-        env["JWKS_HOST"] = urlparse(env["JWT_JWKS"]).hostname
-        env["DEPLOY_REGION"] = Stack.of(self).region
+        # Environment configuration for our envoy and app server containers
+        envoy_frontend_env = {}
+        envoy_frontend_env["JWT_JWKS"] = jwt_jwks
+        envoy_frontend_env["JWT_ISSUER"] = jwt_issuer
+        envoy_frontend_env["APP_DOMAIN"] = app_domain
+        envoy_frontend_env["JWT_AUDIENCE"] = jwt_audience
+        envoy_frontend_env["JWKS_HOST"] = urlparse(envoy_frontend_env["JWT_JWKS"]).hostname
+        envoy_frontend_env["DEPLOY_REGION"] = Stack.of(self).region
+
+        application_env = {}
+        application_env["HTTP_PORT"] = '80'
+        application_env["DEPLOY_REGION"] = Stack.of(self).region
 
         # Create a new VPC
         vpc = ec2.Vpc(self, "LatticeSolnVPC", max_azs=3)
@@ -219,7 +224,7 @@ class LatticeSolnStack(Stack):
             cpu=512,
             memory_limit_mib=2048,
             essential=True,
-            environment=env,
+            environment=envoy_frontend_env,
             logging=ecs.AwsLogDriver.aws_logs(stream_prefix="envoy-frontend"),
             port_mappings=[ecs.PortMapping(container_port=80)],
         )
@@ -327,7 +332,7 @@ class LatticeSolnStack(Stack):
                 cpu=256,
                 memory_limit_mib=256,
                 essential=True,
-                environment=({"HTTP_PORT": "80"}),
+                environment=application_env,
                 logging=ecs.AwsLogDriver.aws_logs(stream_prefix=name),
                 port_mappings=[ecs.PortMapping(container_port=80)],
             )

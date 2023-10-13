@@ -9,8 +9,7 @@ var concat = require('concat-stream');
 const crt = require("aws-crt");
 const { HttpRequest } = require("aws-crt/dist/native/http");
 
-const region = 'ap-southeast-2'
-const util = require('util')
+const region = '${DEPLOY_REGION}'
 
 function sigV4SignBasic(method, endpoint, service) {
     const host = new URL(endpoint).host;
@@ -45,14 +44,10 @@ app.use(function (req, res, next) {
 });
 
 app.all('/app[123]/call-to-app[123]', (req, res) => {
-    // res.json({"text":"got an app path"})
-    console.log("got an app path")
     const http = require("http");
 
     const host = req.path.slice(-4) + '.application.internal'
     const url = 'http://' + host
-    console.log(host)
-    console.log(url)
 
     var headers = {}
     if ('x-jwt-subject' in req.headers)
@@ -60,11 +55,8 @@ app.all('/app[123]/call-to-app[123]', (req, res) => {
 
     sigV4SignBasic("GET", url, "vpc-lattice-svcs").then(
         (httpResponse) => {
-            console.log("**SIGV4HEADERS**");
-            console.dir(httpResponse, { depth: null });
             for (const sigv4header of httpResponse.headers) {
                 headers[sigv4header[0]] = sigv4header[1]
-                console.log("Adding " + sigv4header[0] + ":" + sigv4header[1])
             }
             const options = {
                 hostname: host,
