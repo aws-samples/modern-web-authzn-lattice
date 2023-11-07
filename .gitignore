@@ -5,7 +5,8 @@ __pycache__
 .venv
 *.egg-info
 */containers/app/node_modules
-
+.DS_Store
 # CDK asset staging directory
 .cdk.staging
 cdk.out
+requirements-dev.txt

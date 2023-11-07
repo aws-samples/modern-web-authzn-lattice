@@ -76,55 +76,74 @@ class AwsManagedPrefixList(Construct):
             self, "PrefixList", prefixListId
         )
 
+
 class LatticeSolnStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
         # Our parameters that are used to configure envoy jwt handling and the domain we use for the application
 
-        jwt_jwks = self.node.try_get_context("jwt_jwks")
-        if(jwt_jwks==None):
-            raise ValueError("""
-                  Specify jwt_jwks context when calling cdk synth or deploy
-                  eg: cdk deploy -c jwt_jwks=https://dev-123456.okta.com/oauth2/ausa1234567/v1/keys -c jwt_issuer=https://dev-123456.okta.com/oauth2/ausa1234567 -c jwt_audience=example -c app_domain=application.internal
-                             """)
-        jwt_issuer = self.node.try_get_context("jwt_issuer")
-        if(jwt_issuer==None):
-            raise ValueError("""
-                  Specify jwt_issuer context when calling cdk synth or deploy
-                  eg: cdk deploy -c jwt_jwks=https://dev-123456.okta.com/oauth2/ausa1234567/v1/keys -c jwt_issuer=https://dev-123456.okta.com/oauth2/ausa1234567 -c jwt_audience=example -c app_domain=application.internal
-                             """)
-        jwt_audience = self.node.try_get_context("jwt_audience")
-        if(jwt_audience==None):
-            raise ValueError("""
-                  Specify jwt_audience context when calling cdk synth or deploy
-                  eg: cdk deploy -c jwt_jwks=https://dev-123456.okta.com/oauth2/ausa1234567/v1/keys -c jwt_issuer=https://dev-123456.okta.com/oauth2/ausa1234567 -c jwt_audience=example -c app_domain=application.internal
-                             """)
-        app_domain = self.node.try_get_context("app_domain")
-        if(app_domain==None):
-            raise ValueError("""
-                  Specify app_domain context when calling cdk synth or deploy
-                  eg: cdk deploy -c jwt_jwks=https://dev-123456.okta.com/oauth2/ausa1234567/v1/keys -c jwt_issuer=https://dev-123456.okta.com/oauth2/ausa1234567 -c jwt_audience=example -c app_domain=application.internal
-                             """)
+        # Default we don't enable OAuth features
+        enable_oauth = False
 
-        # Environment configuration for our envoy and app server containers
-        envoy_frontend_env = {}
-        envoy_frontend_env["JWT_JWKS"] = jwt_jwks
-        envoy_frontend_env["JWT_ISSUER"] = jwt_issuer
-        envoy_frontend_env["APP_DOMAIN"] = app_domain
-        envoy_frontend_env["JWT_AUDIENCE"] = jwt_audience
-        envoy_frontend_env["JWKS_HOST"] = urlparse(envoy_frontend_env["JWT_JWKS"]).hostname
-        envoy_frontend_env["DEPLOY_REGION"] = Stack.of(self).region
+        enable_oauth = self.node.try_get_context("enable_oauth")
+        app_domain = self.node.try_get_context("app_domain")
+        if app_domain == None:
+            raise ValueError(
+                """
+                Specify app_domain context when calling cdk synth or deploy
+                eg: cdk deploy -c app_domain=application.internal
+                            """
+            )
+
+        if enable_oauth:
+            jwt_jwks = self.node.try_get_context("jwt_jwks")
+            if jwt_jwks == None:
+                raise ValueError(
+                    """
+                    Specify jwt_jwks context when calling cdk synth or deploy
+                    eg: cdk deploy -c jwt_jwks=https://dev-123456.okta.com/oauth2/ausa1234567/v1/keys -c jwt_issuer=https://dev-123456.okta.com/oauth2/ausa1234567 -c jwt_audience=example -c app_domain=application.internal
+                                """
+                )
+            jwt_issuer = self.node.try_get_context("jwt_issuer")
+            if jwt_issuer == None:
+                raise ValueError(
+                    """
+                    Specify jwt_issuer context when calling cdk synth or deploy
+                    eg: cdk deploy -c jwt_jwks=https://dev-123456.okta.com/oauth2/ausa1234567/v1/keys -c jwt_issuer=https://dev-123456.okta.com/oauth2/ausa1234567 -c jwt_audience=example -c app_domain=application.internal
+                                """
+                )
+            jwt_audience = self.node.try_get_context("jwt_audience")
+            if jwt_audience == None:
+                raise ValueError(
+                    """
+                    Specify jwt_audience context when calling cdk synth or deploy
+                    eg: cdk deploy -c jwt_jwks=https://dev-123456.okta.com/oauth2/ausa1234567/v1/keys -c jwt_issuer=https://dev-123456.okta.com/oauth2/ausa1234567 -c jwt_audience=example -c app_domain=application.internal
+                                """
+                )
+
+            # Environment configuration for our envoy and app server containers
+            envoy_frontend_env = {}
+            envoy_frontend_env["JWT_JWKS"] = jwt_jwks
+            envoy_frontend_env["JWT_ISSUER"] = jwt_issuer
+            envoy_frontend_env["APP_DOMAIN"] = app_domain
+            envoy_frontend_env["JWT_AUDIENCE"] = jwt_audience
+            envoy_frontend_env["JWKS_HOST"] = urlparse(
+                envoy_frontend_env["JWT_JWKS"]
+            ).hostname
+            envoy_frontend_env["DEPLOY_REGION"] = Stack.of(self).region
 
         application_env = {}
-        application_env["HTTP_PORT"] = '80'
+        application_env["HTTP_PORT"] = "80"
         application_env["DEPLOY_REGION"] = Stack.of(self).region
 
         # Create a new VPC
         vpc = ec2.Vpc(self, "LatticeSolnVPC", max_azs=3)
 
         # Create a new hosted zone for our domain
-        zone = route53.PrivateHostedZone(self, "HostedZone", zone_name=app_domain, vpc=vpc)
+        zone = route53.PrivateHostedZone(
+            self, "HostedZone", zone_name=app_domain, vpc=vpc
+        )
 
         # Create a lattice service network with IAM Authentication enabled
         servicenetwork = vpclattice.CfnServiceNetwork(
@@ -174,75 +193,92 @@ class LatticeSolnStack(Stack):
         # Add the autoscaling group to our ECS cluster so we can schedule continers
         cluster.add_asg_capacity_provider(capacity_provider)
 
-        # Create an IAM role for the frontend envoy task
-        envoy_frontend_task_role = iam.Role(
-            self,
-            "EnvoyFrontendTaskRole",
-            assumed_by=iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-        )
+        # Create a list of roles, that can be used in our lattice servicenetwork and service policies
+        roles = {}
 
-        # Give envoy the permission to invoke vpc lattice services
-        envoy_frontend_task_role.attach_inline_policy(
-            iam.Policy(
+        if enable_oauth:
+            # Create an IAM role for the frontend envoy task
+            envoy_frontend_task_role = iam.Role(
                 self,
-                "EnvoyFrontendTaskPolicy",
-                statements=[
-                    iam.PolicyStatement(
-                        actions=["vpc-lattice-svcs:Invoke"],
-                        resources=["*"],
-                        conditions={
-                            "StringEquals": {
-                                "vpc-lattice-svcs:ServiceNetworkArn": servicenetwork.attr_arn
-                            }
-                        },
-                    )
-                ],
+                "EnvoyFrontendTaskRole",
+                assumed_by=iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
             )
-        )
 
-        # Creaate a new task definition for envoy and add in the container we build from containers/envoy directory
-        envoy_frontend_task_definition = ecs.Ec2TaskDefinition(
-            self,
-            "envoy-frontend-task",
-            network_mode=ecs.NetworkMode.AWS_VPC,
-            task_role=envoy_frontend_task_role,
-        )
+            roles["envoy-frontend"] = envoy_frontend_task_role
 
-        envoy_frontend_asset = DockerImageAsset(
-            self,
-            "envoy_frontend",
-            directory=os.path.join(
-                os.path.dirname(os.path.realpath(__file__)), "containers/envoy"
-            ),
-            asset_name="envoy_frontend",
-            platform=Platform.LINUX_AMD64,
-        )
+            # Give envoy the permission to invoke vpc lattice services
+            envoy_frontend_task_role.attach_inline_policy(
+                iam.Policy(
+                    self,
+                    "EnvoyFrontendTaskPolicy",
+                    statements=[
+                        iam.PolicyStatement(
+                            actions=["vpc-lattice-svcs:Invoke"],
+                            resources=["*"],
+                            conditions={
+                                "StringEquals": {
+                                    "vpc-lattice-svcs:ServiceNetworkArn": servicenetwork.attr_arn
+                                }
+                            },
+                        )
+                    ],
+                )
+            )
 
-        envoy_frontend_container = envoy_frontend_task_definition.add_container(
-            "envoy-frontend",
-            image=ecs.ContainerImage.from_docker_image_asset(envoy_frontend_asset),
-            cpu=512,
-            memory_limit_mib=2048,
-            essential=True,
-            environment=envoy_frontend_env,
-            logging=ecs.AwsLogDriver.aws_logs(stream_prefix="envoy-frontend"),
-            port_mappings=[ecs.PortMapping(container_port=80)],
-        )
+            # Creaate a new task definition for envoy and add in the container we build from containers/envoy directory
+            envoy_frontend_task_definition = ecs.Ec2TaskDefinition(
+                self,
+                "envoy-frontend-task",
+                network_mode=ecs.NetworkMode.AWS_VPC,
+                task_role=envoy_frontend_task_role,
+            )
 
-        # Create an ECS service, with a load balancer, using the envoy task definition
-        frontendalbservice = ecs_patterns.ApplicationLoadBalancedEc2Service(
-            self,
-            "envoy-frontend",
-            cluster=cluster,
-            cpu=1024,
-            desired_count=2,
-            task_definition=envoy_frontend_task_definition,
-            memory_limit_mib=2048,
-            public_load_balancer=False,
-        )
+            envoy_frontend_asset = DockerImageAsset(
+                self,
+                "envoy_frontend",
+                directory=os.path.join(
+                    os.path.dirname(os.path.realpath(__file__)), "containers/envoy"
+                ),
+                asset_name="envoy_frontend",
+                platform=Platform.LINUX_AMD64,
+            )
 
-        # Change the load balancer configuration to use /health for health checking envoy
-        frontendalbservice.target_group.configure_health_check(path="/health")
+            envoy_frontend_task_definition.add_container(
+                "envoy-frontend",
+                image=ecs.ContainerImage.from_docker_image_asset(envoy_frontend_asset),
+                cpu=512,
+                memory_limit_mib=2048,
+                essential=True,
+                environment=envoy_frontend_env,
+                logging=ecs.AwsLogDriver.aws_logs(stream_prefix="envoy-frontend"),
+                port_mappings=[ecs.PortMapping(container_port=80)],
+            )
+
+            # Create an ECS service, with a load balancer, using the envoy task definition
+            frontendalbservice = ecs_patterns.ApplicationLoadBalancedEc2Service(
+                self,
+                "envoy-frontend",
+                cluster=cluster,
+                cpu=1024,
+                desired_count=2,
+                task_definition=envoy_frontend_task_definition,
+                memory_limit_mib=2048,
+                public_load_balancer=False,
+            )
+
+            # Change the load balancer configuration to use /health for health checking envoy
+            frontendalbservice.target_group.configure_health_check(path="/health")
+
+            # Add a generic domain A record pointing to the frontend envoy load balancer, used for client communications
+            route53.ARecord(
+                self,
+                app_domain,
+                record_name=app_domain,
+                zone=zone,
+                target=route53.RecordTarget.from_alias(
+                    targets.LoadBalancerTarget(frontendalbservice.load_balancer)
+                ),
+            )
 
         # Create a security group for all of our application containers, with inbound access from the lattice Prefix List
         # This is done via looking up managed prefix list with name com.amazonaws.ap-southeast-2.vpc-lattice or equivalent for
@@ -261,17 +297,6 @@ class LatticeSolnStack(Stack):
             "http inbound from lattice",
         )
 
-        # Add a generic domain A record pointing to the frontend envoy load balancer, used for client communications
-        route53.ARecord(
-            self,
-            app_domain,
-            record_name=app_domain,
-            zone=zone,
-            target=route53.RecordTarget.from_alias(
-                targets.LoadBalancerTarget(frontendalbservice.load_balancer)
-            ),
-        )
-
         # Build the docker container for our app server. This is reused in three task definitions, one for each app component
         webserver_asset = DockerImageAsset(
             self,
@@ -281,15 +306,12 @@ class LatticeSolnStack(Stack):
             ),
             asset_name="webserver",
             platform=Platform.LINUX_AMD64,
+            build_args={"no-cache":"true"}
         )
-
-        # Create a list of roles, that can be used in our lattice servicenetwork and service policies
-        roles = {}
-        roles['envoy-frontend'] = envoy_frontend_task_role
 
         for name in ("app1", "app2", "app3"):
             # Create an iam role for the task running the app. This allows the task to perform sigv4 signing to access lattice
-            id = name + "TaskRole";
+            id = name + "TaskRole"
             app_role = iam.Role(
                 self,
                 id,
@@ -314,10 +336,9 @@ class LatticeSolnStack(Stack):
                 )
             )
             # Store the new task role to our list
-            roles[name]=app_role
+            roles[name] = app_role
 
         for name in ("app1", "app2", "app3"):
-
             # Create a task definition for our app component
             task_definition = ecs.Ec2TaskDefinition(
                 self,
@@ -326,6 +347,7 @@ class LatticeSolnStack(Stack):
                 task_role=roles[name],
             )
 
+            application_env['WEBSERVER']=name
             task_definition.add_container(
                 name + "-container",
                 image=ecs.ContainerImage.from_docker_image_asset(webserver_asset),
@@ -358,65 +380,91 @@ class LatticeSolnStack(Stack):
                 self,
                 name + "-LatticeService",
                 dns_entry=vpclattice.CfnService.DnsEntryProperty(
-                    domain_name=name + "." + app_domain, hosted_zone_id=zone.hosted_zone_id
+                    domain_name=name + "." + app_domain,
+                    hosted_zone_id=zone.hosted_zone_id,
                 ),
                 custom_domain_name=name + "." + app_domain,
-                auth_type="AWS_IAM"
+                auth_type="AWS_IAM",
             )
 
             authpolicy = iam.PolicyDocument()
 
             # Create our lattice service policy
             match name:
-                case 'app1':
-                    # app1 policy allows clients with scope test.all and application app2 to call
-                    authpolicy = iam.PolicyDocument(
-                        statements=[
+                case "app1":
+                    # app1 policy allows application app2 to call
+                    statements = [
+                        iam.PolicyStatement(
+                            actions=["vpc-lattice-svcs:Invoke"],
+                            principals=[iam.ArnPrincipal(roles["app2"].role_arn)],
+                            resources=[latticeservice.attr_arn + "/*"],
+                        )
+                    ]
+                    if enable_oauth:
+                    # app1 policy allows clients with scope test.all to call
+                        statements.append(
                             iam.PolicyStatement(
                                 actions=["vpc-lattice-svcs:Invoke"],
-                                principals=[iam.ArnPrincipal(roles['app2'].role_arn)],
-                                resources=[latticeservice.attr_arn+"/*"],
-                            ),
-                            iam.PolicyStatement(
-                                actions=["vpc-lattice-svcs:Invoke"],
-                                principals=[iam.ArnPrincipal(roles['envoy-frontend'].role_arn)],
-                                resources=[latticeservice.attr_arn+"/*"],
-                                conditions={"StringEquals": {"vpc-lattice-svcs:RequestHeader/x-jwt-scope-test.all": "true"}},
+                                principals=[
+                                    iam.ArnPrincipal(roles["envoy-frontend"].role_arn)
+                                ],
+                                resources=[latticeservice.attr_arn + "/*"],
+                                conditions={
+                                    "StringEquals": {
+                                        "vpc-lattice-svcs:RequestHeader/x-jwt-scope-test.all": "true"
+                                    }
+                                },
                             )
-                        ]
-                    )
-                case 'app2':
+                        )
+                    authpolicy = iam.PolicyDocument(statements=statements)
+                case "app2":
                     # app2 policy only allows clients with scope test.all
-                    authpolicy = iam.PolicyDocument(
-                        statements=[
+                    if enable_oauth:
+                        statements = [
                             iam.PolicyStatement(
                                 actions=["vpc-lattice-svcs:Invoke"],
-                                principals=[iam.ArnPrincipal(roles['envoy-frontend'].role_arn)],
-                                resources=[latticeservice.attr_arn+"/*"],
-                                conditions={"StringEquals": {"vpc-lattice-svcs:RequestHeader/x-jwt-scope-test.all": "true"}},
+                                principals=[
+                                    iam.ArnPrincipal(roles["envoy-frontend"].role_arn)
+                                ],
+                                resources=[latticeservice.attr_arn + "/*"],
+                                conditions={
+                                    "StringEquals": {
+                                        "vpc-lattice-svcs:RequestHeader/x-jwt-scope-test.all": "true"
+                                    }
+                                },
                             )
                         ]
-                    )
-                case 'app3':
+                    else:
+                        statements = [
+                            iam.PolicyStatement(
+                                effect=iam.Effect.DENY,
+                                actions=["*"],
+                                principals=[iam.AnyPrincipal()],
+                                resources=[latticeservice.attr_arn + "/*"],
+                            )
+                        ]
+
+                    authpolicy = iam.PolicyDocument(statements=statements)
+                case "app3":
                     # no auth policy for app3
                     authpolicy = iam.PolicyDocument(
                         statements=[
                             iam.PolicyStatement(
                                 effect=iam.Effect.DENY,
-                                actions=['*'],
+                                actions=["*"],
                                 principals=[iam.AnyPrincipal()],
-                                resources=[latticeservice.attr_arn+"/*"]
+                                resources=[latticeservice.attr_arn + "/*"],
                             )
                         ]
                     )
 
             servicepolicy = vpclattice.CfnAuthPolicy(
                 self,
-                name+"LatticeServicePolicy",
+                name + "LatticeServicePolicy",
                 resource_identifier=latticeservice.attr_arn,
                 policy=authpolicy,
             )
-            
+
             # Associate the lattice service with our service network
             vpclattice.CfnServiceNetworkServiceAssociation(
                 self,
