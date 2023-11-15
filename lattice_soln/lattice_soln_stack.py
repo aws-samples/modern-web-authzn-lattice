@@ -348,6 +348,8 @@ class LatticeSolnStack(Stack):
             )
 
             application_env['WEBSERVER']=name
+            docker_labels={}
+            docker_labels['webserver']=name
             task_definition.add_container(
                 name + "-container",
                 image=ecs.ContainerImage.from_docker_image_asset(webserver_asset),
@@ -357,6 +359,7 @@ class LatticeSolnStack(Stack):
                 environment=application_env,
                 logging=ecs.AwsLogDriver.aws_logs(stream_prefix=name),
                 port_mappings=[ecs.PortMapping(container_port=80)],
+                docker_labels=docker_labels
             )
 
             # Create a load balanced ECS service for each app component
