@@ -140,8 +140,21 @@ class LatticeSolnStack(Stack):
         application_env["HTTP_PORT"] = "80"
         application_env["DEPLOY_REGION"] = Stack.of(self).region
 
+        private_subnet_configuration = [ 
+                ec2.SubnetConfiguration( cidr_mask=26, name="private1", subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS ), 
+                ec2.SubnetConfiguration( cidr_mask=26, name="private2", subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS ), 
+                ec2.SubnetConfiguration( cidr_mask=26, name="private3", subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS ),
+        ]
+        public_subnet_configuration = [
+                ec2.SubnetConfiguration( cidr_mask=26, name="public1", subnet_type=ec2.SubnetType.PUBLIC ), 
+                ec2.SubnetConfiguration( cidr_mask=26, name="public2", subnet_type=ec2.SubnetType.PUBLIC ), 
+                ec2.SubnetConfiguration( cidr_mask=26, name="public3", subnet_type=ec2.SubnetType.PUBLIC )
+        ]
+
         # Create a new VPC
-        vpc = ec2.Vpc(self, "LatticeSolnVPC", max_azs=3)
+        vpc = ec2.Vpc(self, "LatticeSolnVPC", 
+            subnet_configuration= private_subnet_configuration.extend(public_subnet_configuration),
+                max_azs=3)
 
         # Create a new hosted zone for our domain
         zone = route53.PrivateHostedZone(
@@ -187,6 +200,7 @@ class LatticeSolnStack(Stack):
             machine_image=ecs.EcsOptimizedImage.amazon_linux2(),
             desired_capacity=3,
             role=ecs_asg_role,
+            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS)
         )
 
         capacity_provider = ecs.AsgCapacityProvider(
@@ -195,7 +209,6 @@ class LatticeSolnStack(Stack):
 
         # Add the autoscaling group to our ECS cluster so we can schedule continers
         cluster.add_asg_capacity_provider(capacity_provider)
-
         # Create a list of roles, that can be used in our lattice servicenetwork and service policies
         roles = {}
 
