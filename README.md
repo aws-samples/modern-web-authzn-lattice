@@ -20,3 +20,5 @@ The repository demonstrates some novel and reusable solution components:
 * SigV4 signing from an Envoy Proxy running in a container.
 * Service to service flows, using SigV4 signing in node.js and container based credentials.
 * Integration of VPC Lattice with ECS containers, using CDK
+
+Note: This solution is intended as sample code only, and not for production use. In particular, it does not implement TLS and the sample application will echo the contents of the request back to the caller.
