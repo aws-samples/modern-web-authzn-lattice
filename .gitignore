@@ -1,12 +1,4 @@
-*.swp
-package-lock.json
-__pycache__
-.pytest_cache
-.venv
-*.egg-info
-*/containers/app/node_modules
-.DS_Store
-# CDK asset staging directory
-.cdk.staging
+.venv/*
 cdk.out
-requirements-dev.txt
+.DS_Store
+__pycache__

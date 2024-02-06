@@ -3,42 +3,32 @@
 
 from aws_cdk import (
     Stack,
-)
-from aws_cdk import (
     aws_ec2 as ec2,
     aws_ecs as ecs,
     aws_ecs_patterns as ecs_patterns,
-    CfnParameter,
     aws_autoscaling as autoscaling,
     aws_iam as iam,
     aws_vpclattice as vpclattice,
     aws_route53 as route53,
     aws_route53_targets as targets,
+    aws_acmpca as acmpca,
+    aws_certificatemanager as certificatemanager
 )
 
 from aws_cdk.aws_ecr_assets import DockerImageAsset, Platform
 
 from urllib.parse import urlparse
 
-from constructs import Construct
-
-import sys
 import os
-from aws_cdk.aws_ec2 import IPrefixList, PrefixList
+from aws_cdk.aws_ec2 import PrefixList
 from aws_cdk.custom_resources import (
     AwsCustomResource,
     AwsCustomResourcePolicy,
     PhysicalResourceId,
 )
-from constructs import Construct
 
-from aws_cdk.aws_ec2 import IPrefixList, PrefixList
 from aws_cdk.aws_iam import Effect, PolicyStatement
-from aws_cdk.custom_resources import (
-    AwsCustomResource,
-    AwsCustomResourcePolicy,
-    PhysicalResourceId,
-)
+
 from constructs import Construct
 
 
@@ -79,10 +69,35 @@ class AwsManagedPrefixList(Construct):
             self, "PrefixList", prefixListId
         )
 
-
 class LatticeSolnStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
+
+        cfn_certificate_authority = acmpca.CfnCertificateAuthority(self, "CA",
+            type="ROOT",
+            key_algorithm="RSA_2048",
+            signing_algorithm="SHA256WITHRSA",
+            subject=acmpca.CfnCertificateAuthority.SubjectProperty(
+                country="AU",
+                organization="LatticeSolution",
+                organizational_unit="LatticeSolution",
+                distinguished_name_qualifier="LatticeSolution",
+                state="LatticeSolution",
+                common_name="LatticeSolution",
+                serial_number="12345",
+            )
+        )
+
+        ca_cert = acmpca.CfnCertificate(self, "ca_cert", certificate_authority_arn=cfn_certificate_authority.attr_arn, 
+                                     certificate_signing_request=cfn_certificate_authority.attr_certificate_signing_request,
+                                     signing_algorithm="SHA256WITHRSA",
+                                     validity=acmpca.CfnCertificate.ValidityProperty( type="DAYS",value=3652) ,
+                                     template_arn="arn:aws:acm-pca:::template/RootCACertificate/V1"
+                                     )
+
+        ca_activation = acmpca.CfnCertificateAuthorityActivation(self, "ca_activation", certificate=ca_cert.attr_certificate, certificate_authority_arn=cfn_certificate_authority.attr_arn,status="ACTIVE")
+
+        created_ca = acmpca.CertificateAuthority.from_certificate_authority_arn(self, 'created_ca', cfn_certificate_authority.attr_arn)
 
         # Our parameters that are used to configure envoy jwt handling and the domain we use for the application
 
@@ -270,6 +285,13 @@ class LatticeSolnStack(Stack):
                 port_mappings=[ecs.PortMapping(container_port=80)],
             )
 
+
+            cert = certificatemanager.PrivateCertificate(self, "envoy-frontend", 
+                domain_name="envoy-frontend."+app_domain,
+                certificate_authority=created_ca
+                )
+            cert.node.add_dependency(ca_activation)
+
             # Create an ECS service, with a load balancer, using the envoy task definition
             frontendalbservice = ecs_patterns.ApplicationLoadBalancedEc2Service(
                 self,
@@ -280,6 +302,7 @@ class LatticeSolnStack(Stack):
                 task_definition=envoy_frontend_task_definition,
                 memory_limit_mib=2048,
                 public_load_balancer=False,
+                certificate=cert
             )
 
             # Change the load balancer configuration to use /health for health checking envoy
@@ -309,8 +332,8 @@ class LatticeSolnStack(Stack):
 
         latticesecuritygroup.add_ingress_rule(
             ec2.Peer.prefix_list(latticeprefixlist.prefix_list_id),
-            ec2.Port.tcp(80),
-            "http inbound from lattice",
+            ec2.Port.tcp(443),
+            "https inbound from lattice",
         )
 
         # Build the docker container for our app server. This is reused in three task definitions, one for each app component
@@ -378,6 +401,14 @@ class LatticeSolnStack(Stack):
                 docker_labels=docker_labels
             )
 
+            # Create a TLS certificate for our lattice service
+            cert = certificatemanager.PrivateCertificate(self, name + "." +app_domain, 
+                domain_name=name + "." +app_domain,
+                certificate_authority=created_ca
+                )
+
+            cert.node.add_dependency(ca_activation)
+
             # Create a load balanced ECS service for each app component
             service = ecs_patterns.ApplicationLoadBalancedEc2Service(
                 self,
@@ -385,6 +416,7 @@ class LatticeSolnStack(Stack):
                 cluster=cluster,
                 cpu=1024,
                 desired_count=1,
+                certificate=cert,
                 open_listener=False,
                 task_definition=task_definition,
                 memory_limit_mib=2048,
@@ -404,78 +436,78 @@ class LatticeSolnStack(Stack):
                 ),
                 custom_domain_name=name + "." + app_domain,
                 auth_type="AWS_IAM",
+                certificate_arn=cert.certificate_arn
             )
 
             authpolicy = iam.PolicyDocument()
 
             # Create our lattice service policy
-            match name:
-                case "app1":
-                    # app1 policy allows application app2 to call
+            if (name=="app1"):
+                # app1 policy allows application app2 to call
+                statements = [
+                    iam.PolicyStatement(
+                        actions=["vpc-lattice-svcs:Invoke"],
+                        principals=[iam.ArnPrincipal(roles["app2"].role_arn)],
+                        resources=[latticeservice.attr_arn + "/*"],
+                    )
+                ]
+                if enable_oauth:
+                # app1 policy allows clients with scope test.all to call
+                    statements.append(
+                        iam.PolicyStatement(
+                            actions=["vpc-lattice-svcs:Invoke"],
+                            principals=[
+                                iam.ArnPrincipal(roles["envoy-frontend"].role_arn)
+                            ],
+                            resources=[latticeservice.attr_arn + "/*"],
+                            conditions={
+                                "StringEquals": {
+                                    "vpc-lattice-svcs:RequestHeader/x-jwt-scope-test.all": "true"
+                                }
+                            },
+                        )
+                    )
+                authpolicy = iam.PolicyDocument(statements=statements)
+            elif(name=="app2"):
+                # app2 policy only allows clients with scope test.all
+                if enable_oauth:
                     statements = [
                         iam.PolicyStatement(
                             actions=["vpc-lattice-svcs:Invoke"],
-                            principals=[iam.ArnPrincipal(roles["app2"].role_arn)],
+                            principals=[
+                                iam.ArnPrincipal(roles["envoy-frontend"].role_arn)
+                            ],
+                            resources=[latticeservice.attr_arn + "/*"],
+                            conditions={
+                                "StringEquals": {
+                                    "vpc-lattice-svcs:RequestHeader/x-jwt-scope-test.all": "true"
+                                }
+                            },
+                        )
+                    ]
+                else:
+                    statements = [
+                        iam.PolicyStatement(
+                            effect=iam.Effect.DENY,
+                            actions=["*"],
+                            principals=[iam.AnyPrincipal()],
                             resources=[latticeservice.attr_arn + "/*"],
                         )
                     ]
-                    if enable_oauth:
-                    # app1 policy allows clients with scope test.all to call
-                        statements.append(
-                            iam.PolicyStatement(
-                                actions=["vpc-lattice-svcs:Invoke"],
-                                principals=[
-                                    iam.ArnPrincipal(roles["envoy-frontend"].role_arn)
-                                ],
-                                resources=[latticeservice.attr_arn + "/*"],
-                                conditions={
-                                    "StringEquals": {
-                                        "vpc-lattice-svcs:RequestHeader/x-jwt-scope-test.all": "true"
-                                    }
-                                },
-                            )
-                        )
-                    authpolicy = iam.PolicyDocument(statements=statements)
-                case "app2":
-                    # app2 policy only allows clients with scope test.all
-                    if enable_oauth:
-                        statements = [
-                            iam.PolicyStatement(
-                                actions=["vpc-lattice-svcs:Invoke"],
-                                principals=[
-                                    iam.ArnPrincipal(roles["envoy-frontend"].role_arn)
-                                ],
-                                resources=[latticeservice.attr_arn + "/*"],
-                                conditions={
-                                    "StringEquals": {
-                                        "vpc-lattice-svcs:RequestHeader/x-jwt-scope-test.all": "true"
-                                    }
-                                },
-                            )
-                        ]
-                    else:
-                        statements = [
-                            iam.PolicyStatement(
-                                effect=iam.Effect.DENY,
-                                actions=["*"],
-                                principals=[iam.AnyPrincipal()],
-                                resources=[latticeservice.attr_arn + "/*"],
-                            )
-                        ]
 
-                    authpolicy = iam.PolicyDocument(statements=statements)
-                case "app3":
-                    # no auth policy for app3
-                    authpolicy = iam.PolicyDocument(
-                        statements=[
-                            iam.PolicyStatement(
-                                effect=iam.Effect.DENY,
-                                actions=["*"],
-                                principals=[iam.AnyPrincipal()],
-                                resources=[latticeservice.attr_arn + "/*"],
-                            )
-                        ]
-                    )
+                authpolicy = iam.PolicyDocument(statements=statements)
+            else:
+                # no auth policy for app3
+                authpolicy = iam.PolicyDocument(
+                    statements=[
+                        iam.PolicyStatement(
+                            effect=iam.Effect.DENY,
+                            actions=["*"],
+                            principals=[iam.AnyPrincipal()],
+                            resources=[latticeservice.attr_arn + "/*"],
+                        )
+                    ]
+                )
 
             servicepolicy = vpclattice.CfnAuthPolicy(
                 self,
@@ -498,7 +530,7 @@ class LatticeSolnStack(Stack):
                 id=name + "-LatticeTargetGroup",
                 type="ALB",
                 config=vpclattice.CfnTargetGroup.TargetGroupConfigProperty(
-                    port=80, protocol="HTTP", vpc_identifier=vpc.vpc_id
+                    port=443, protocol="HTTPS", vpc_identifier=vpc.vpc_id
                 ),
                 targets=[
                     vpclattice.CfnTargetGroup.TargetProperty(
@@ -520,7 +552,7 @@ class LatticeSolnStack(Stack):
             vpclattice.CfnListener(
                 self,
                 name + "-LatticeListener",
-                protocol="HTTP",
+                protocol="HTTPS",
                 default_action=vpclattice.CfnListener.DefaultActionProperty(
                     forward=vpclattice.CfnListener.ForwardProperty(
                         target_groups=[
@@ -530,7 +562,7 @@ class LatticeSolnStack(Stack):
                         ]
                     )
                 ),
-                port=80,
+                port=443,
                 service_identifier=latticeservice.attr_id,
             )
 
