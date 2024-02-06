@@ -1,5 +1,5 @@
 
-# Modern Web Authentication/Authorization with AWS VPC Lattice
+# Modern web authentication and authorization with Amazon VPC Lattice
 
 This repository accompanies the blog post <blogURL>
 
@@ -13,6 +13,7 @@ It will deploy the following components:
     * Application component load balancers are configured to only accept traffic from the VPC Lattice Managed Prefix List.
     * The front-end envoy load balancer is configured to accept traffic from any host 
 * 3 VPC Lattice Services and 1 VPC Lattice Network.
+* AWS Private CA and 1-4 Private certificates issued using ACM
 
 The repository demonstrates some novel and reusable solution components:
 
@@ -21,4 +22,4 @@ The repository demonstrates some novel and reusable solution components:
 * Service to service flows, using SigV4 signing in node.js and container based credentials.
 * Integration of VPC Lattice with ECS containers, using CDK
 
-Note: This solution is intended as sample code only, and not for production use. In particular, it does not implement TLS and the sample application will echo the contents of the request back to the caller.
+Note: This solution is intended as sample code only, and not for production use. In particular, it does not implement TLS to the container and the sample application will echo the contents of the request back to the caller.
