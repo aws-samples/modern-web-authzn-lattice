@@ -187,7 +187,15 @@ static_resources:
               dns_resolver_options:
                 use_tcp_for_dns_lookups: true
                 no_default_search_domain: true
-  # Host configuration for jwks lookup
+    transport_socket:
+      name: envoy.transport_sockets.tls
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+        common_tls_context:
+          validation_context:
+            trusted_ca:
+              filename: /etc/ssl/certs/ca-bundle.crt 
+# Host configuration for jwks lookup
   - name: jwks
     type: STRICT_DNS
     connect_timeout: 5s

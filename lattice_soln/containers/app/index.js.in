@@ -47,10 +47,10 @@ app.use(function (req, res, next) {
 });
 
 app.all('/app[123]/call-to-app[123]', (req, res) => {
-    const http = require("http");
+    const https = require("https");
 
-    const host = req.path.slice(-4) + '.application.internal'
-    const url = 'http://' + host
+    const host = req.path.slice(-4) + '.' + '${APP_DOMAIN}'
+    const url = 'https://' + host
 
     var headers = {}
 
@@ -61,13 +61,13 @@ app.all('/app[123]/call-to-app[123]', (req, res) => {
             }
             const options = {
                 hostname: host,
-                port: 80,
+                port: 443,
                 path: '/',
                 method: 'GET',
                 headers: headers
             }
 
-            req = http.request(options, (resp) => {
+            req = https.request(options, (resp) => {
                 let data = [];
                 resp.on('data', chunk => {
                     data.push(chunk);

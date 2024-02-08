@@ -6,7 +6,7 @@ RUN yum -y update && \
     rm -rf /var/cache/yum
 
 COPY --from=envoy /usr/bin/envoy /usr/bin/envoy
-RUN yum install -y gettext
+RUN yum install -y gettext awscli
 COPY envoy.yaml.in /etc/envoy/envoy.yaml.in
 COPY launch_envoy.sh /usr/local/bin/launch_envoy.sh
 RUN chmod 755 /usr/local/bin/launch_envoy.sh

@@ -150,10 +150,13 @@ class LatticeSolnStack(Stack):
                 envoy_frontend_env["JWT_JWKS"]
             ).hostname
             envoy_frontend_env["DEPLOY_REGION"] = Stack.of(self).region
+            envoy_frontend_env["CA_ARN"]=created_ca.certificate_authority_arn
 
         application_env = {}
         application_env["HTTP_PORT"] = "80"
         application_env["DEPLOY_REGION"] = Stack.of(self).region
+        application_env["APP_DOMAIN"] = app_domain
+        application_env["CA_ARN"]=created_ca.certificate_authority_arn
 
         private_subnet_configuration = [ 
                 ec2.SubnetConfiguration( cidr_mask=26, name="private1", subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS ), 
@@ -206,7 +209,19 @@ class LatticeSolnStack(Stack):
                 "AmazonSSMManagedInstanceCore"
             )
         )
-
+        ecs_asg_role.attach_inline_policy(
+            iam.Policy(
+                self,
+                "ecs_asg_ca_policy",
+                statements=[
+                    iam.PolicyStatement(
+                        actions=["acm-pca:GetCertificateAuthorityCertificate"],
+                        resources=[created_ca.certificate_authority_arn],
+                    )
+                ],
+            )
+        )
+    
         auto_scaling_group = autoscaling.AutoScalingGroup(
             self,
             "LatticeSolnAsg",
@@ -215,12 +230,18 @@ class LatticeSolnStack(Stack):
             machine_image=ecs.EcsOptimizedImage.amazon_linux2(),
             desired_capacity=3,
             role=ecs_asg_role,
-            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS)
-        )
+            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
+            )
+
+        auto_scaling_group.add_user_data('yum install awscli -y')
+        auto_scaling_group.add_user_data('aws acm-pca get-certificate-authority-certificate --certificate-authority-arn '+created_ca.certificate_authority_arn+' --region '+Stack.of(self).region+' --output text > /etc/pki/ca-trust/source/anchors/internal.pem')
+        auto_scaling_group.add_user_data('update-ca-trust extract')
 
         capacity_provider = ecs.AsgCapacityProvider(
             self, "AsgCapacityProvider", auto_scaling_group=auto_scaling_group
         )
+
+        auto_scaling_group.node.add_dependency(ca_activation)
 
         # Add the autoscaling group to our ECS cluster so we can schedule continers
         cluster.add_asg_capacity_provider(capacity_provider)
@@ -251,6 +272,10 @@ class LatticeSolnStack(Stack):
                                     "vpc-lattice-svcs:ServiceNetworkArn": servicenetwork.attr_arn
                                 }
                             },
+                        ),
+                        iam.PolicyStatement(
+                            actions=["acm-pca:GetCertificateAuthorityCertificate"],
+                            resources=[created_ca.certificate_authority_arn],
                         )
                     ],
                 )
@@ -286,8 +311,8 @@ class LatticeSolnStack(Stack):
             )
 
 
-            cert = certificatemanager.PrivateCertificate(self, "envoy-frontend", 
-                domain_name="envoy-frontend."+app_domain,
+            cert = certificatemanager.PrivateCertificate(self, "envoy-frontend-certificate", 
+                domain_name=app_domain,
                 certificate_authority=created_ca
                 )
             cert.node.add_dependency(ca_activation)
@@ -370,6 +395,10 @@ class LatticeSolnStack(Stack):
                                     "vpc-lattice-svcs:ServiceNetworkArn": servicenetwork.attr_arn
                                 }
                             },
+                        ),
+                        iam.PolicyStatement(
+                            actions=["acm-pca:GetCertificateAuthorityCertificate"],
+                            resources=[created_ca.certificate_authority_arn],
                         )
                     ],
                 )
@@ -402,7 +431,7 @@ class LatticeSolnStack(Stack):
             )
 
             # Create a TLS certificate for our lattice service
-            cert = certificatemanager.PrivateCertificate(self, name + "." +app_domain, 
+            cert = certificatemanager.PrivateCertificate(self, name + "." +app_domain+"-certificate", 
                 domain_name=name + "." +app_domain,
                 certificate_authority=created_ca
                 )
