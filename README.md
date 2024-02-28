@@ -1,5 +1,5 @@
 
-# Modern web authentication and authorization with Amazon VPC Lattice
+# Modern web application authentication and authorization with Amazon VPC Lattice
 
 This repository accompanies the blog post https://aws.amazon.com/blogs/security/modern-web-application-authentication-and-authorization-with-amazon-vpc-lattice/
 
