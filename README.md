@@ -1,7 +1,7 @@
 
 # Modern web authentication and authorization with Amazon VPC Lattice
 
-This repository accompanies the blog post <blogURL>
+This repository accompanies the blog post https://aws.amazon.com/blogs/security/modern-web-application-authentication-and-authorization-with-amazon-vpc-lattice/
 
 It will deploy the following components:
 
